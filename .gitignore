@@ -1,0 +1,7 @@
+node_modules/
+scratch/
+*.log
+.DS_Store
+
+# Reference material copied out of the opencode sources while researching the plugin API.
+_*

@@ -1,0 +1,10 @@
+{
+  "name": "opencode-puku",
+  "version": "0.1.0",
+  "description": "Puku AI provider plugin for OpenCode: signs in with Puku OAuth and exposes the Puku models.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}
