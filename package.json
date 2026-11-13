@@ -4,6 +4,13 @@
   "description": "Puku AI provider plugin for OpenCode: signs in with Puku OAuth and exposes the Puku models.",
   "type": "module",
   "license": "MIT",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
   "engines": {
     "node": ">=20"
   }
