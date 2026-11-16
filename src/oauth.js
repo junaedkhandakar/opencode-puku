@@ -1,9 +1,10 @@
 // Puku OAuth 2.0 + PKCE sign-in for the OpenCode plugin.
 //
 // Puku's OAuth server only accepts the registered `puku-cli` client, so the
-// plugin borrows that client's identity. Its redirect allowlist accepts
-// http://127.0.0.1:<port>/callback and http://localhost:<port>/callback for
-// any port, so the loopback listener binds an ephemeral port.
+// plugin borrows that client's identity. Its redirect allowlist is fixed and
+// covers http://127.0.0.1:<port>/callback and http://localhost:<port>/callback
+// for the ports in PUKU.callbackPorts only, so the loopback listener walks
+// that range and takes the first free port.
 
 import { createHash, randomBytes } from "node:crypto"
 import { spawn } from "node:child_process"
@@ -70,7 +71,7 @@ export async function listenForCallback({ timeoutMs = 300_000 } = {}) {
   })
 
   const port = await bind(server)
-  const redirectUri = `http://127.0.0.1:${port}/callback`
+  const redirectUri = `http://${PUKU.callbackHost}:${port}/callback`
   const timeout = setTimeout(() => {
     if (!settled) {
       settled = true
@@ -91,21 +92,41 @@ export async function listenForCallback({ timeoutMs = 300_000 } = {}) {
   }
 }
 
+/**
+ * Binds the first free port of Puku's redirect allowlist. The ports are fixed,
+ * so a busy one is skipped instead of failing the sign-in.
+ */
 async function bind(server) {
   // The listener must not keep the OpenCode server alive if the attempt is cancelled.
   server.unref?.()
-  await new Promise((resolve, reject) => {
+  let failure
+  for (const port of PUKU.callbackPorts) {
+    try {
+      await listen(server, port)
+      return port
+    } catch (error) {
+      // Another process already holds this port; the allowlist has twenty of them.
+      if (error?.code !== "EADDRINUSE") throw error
+      failure = error
+    }
+  }
+  const first = PUKU.callbackPorts[0]
+  const last = PUKU.callbackPorts[PUKU.callbackPorts.length - 1]
+  throw new Error(`No free Puku callback port between ${first} and ${last}`, { cause: failure })
+}
+
+function listen(server, port) {
+  return new Promise((resolve, reject) => {
     const onError = (error) => {
       server.removeListener("error", onError)
       reject(error)
     }
     server.once("error", onError)
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(port, PUKU.callbackHost, () => {
       server.removeListener("error", onError)
       resolve()
     })
   })
-  return server.address().port
 }
 
 /** Exchanges an authorization code for access and refresh tokens. */
@@ -194,6 +215,8 @@ const escapeHtml = (value) =>
 
 /** Opens the browser on the sign-in page. A failure is not fatal: the URL is shown to the user. */
 export function openBrowser(url) {
+  // Headless setups can turn the launch off and open the URL by hand.
+  if (process.env.PUKU_OPEN_BROWSER === "0") return
   try {
     if (process.platform === "win32") {
       spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref()

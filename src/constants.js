@@ -16,18 +16,30 @@ export const PUKU = {
   tokenUrl: "https://puku.sh/api/oauth/token",
   /** Mints a long-lived API key from an OAuth access token. */
   apiKeyUrl: "https://puku.sh/api/oauth/puku_cli/create_api_key",
-  /** Anthropic-compatible inference API. */
+  /** Anthropic-compatible inference API. The runtime appends `/messages` to it. */
   apiBase: "https://api-cli.puku.sh/v1",
   /** Runtime package that speaks the Anthropic Messages protocol. */
   package: "@opencode/ai/providers/anthropic-compatible",
-  /** `user:inference` allows inference, `user:profile` identifies the account. */
-  scopes: ["user:profile", "user:inference"],
+  /**
+   * Loopback ports Puku accepts as an OAuth redirect. The allowlist comes from
+   * https://puku.sh/oauth/puku-cli-client-metadata and is fixed: a redirect to
+   * any other port is rejected when the authorization code is exchanged.
+   */
+  callbackPorts: Array.from({ length: 20 }, (_, index) => 3118 + index),
+  /** Host of the callback listener. The allowlist covers 127.0.0.1 as well. */
+  callbackHost: "127.0.0.1",
+  /**
+   * `org:create_api_key` mints the inference key, `user:profile` identifies the
+   * account and `user:inference` allows inference.
+   */
+  scopes: ["org:create_api_key", "user:profile", "user:inference"],
   /** Puku caps output at 8192 tokens for every model it serves. */
   outputLimit: 8_192,
   contextLimit: 200_000,
   modelNames: {
     "puku-ai-2.8": "Puku AI 2.8",
     "puku-ai-2.7": "Puku AI 2.7",
+    "claude-opus-4-8": "Claude Opus 4.8",
   },
-  fallbackModels: ["puku-ai-2.8", "puku-ai-2.7"],
+  fallbackModels: ["puku-ai-2.8", "puku-ai-2.7", "claude-opus-4-8"],
 }
