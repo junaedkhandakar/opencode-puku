@@ -3,10 +3,6 @@
 export const PUKU = {
   /** Provider ID used in model references such as `puku/puku-ai-2.8`. */
   providerID: "puku",
-  /** Integration ID that owns the stored Puku credentials. */
-  integrationID: "puku",
-  /** Method ID of the browser OAuth sign-in. */
-  oauthMethodID: "puku-oauth",
   /**
    * OAuth client registered by the Puku CLI. Puku's OAuth server rejects every
    * other client ID, so the plugin borrows this client's identity.

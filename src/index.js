@@ -1,107 +1,131 @@
-// OpenCode plugin that exposes the Puku models and the Puku sign-in.
+// OpenCode plugin that exposes the Puku models.
 //
-// The plugin contributes two things to OpenCode:
+// Puku has no entry in the models.dev catalog and an OpenCode plugin cannot
+// create an integration, so the plugin registers the provider itself:
 //
-// - an integration named `puku` with a browser OAuth method, so OpenCode
-//   stores the Puku credential and renews it when the access token expires;
-// - a provider named `puku` that points at Puku's Anthropic-compatible
-//   inference API.
+// - the provider points at Puku's Anthropic-compatible API and carries the API
+//   key, which the runtime sends as `x-api-key`;
+// - `/puku-signin` runs the Puku OAuth + PKCE flow in the browser, mints an
+//   API key from the access token and stores it.
 //
-// The provider carries the integration ID, so OpenCode resolves the stored
-// credential on its own and hands the access token to the provider package.
+// The models are used as `puku/<model-id>`, for example `puku/puku-ai-2.8`.
 
 import { randomBytes } from "node:crypto"
 
-import { listModels, toModelInfo } from "./api.js"
+import { listModels } from "./api.js"
 import { PUKU } from "./constants.js"
-import { authorizeUrl, exchangeCode, listenForCallback, openBrowser, pkce, refreshAccessToken } from "./oauth.js"
+import { createApiKey } from "./keys.js"
+import { authorizeUrl, exchangeCode, listenForCallback, openBrowser, pkce } from "./oauth.js"
 
-/** The provider definition OpenCode shows in its provider list. */
-function providerInfo() {
-  return {
-    id: PUKU.providerID,
-    name: "Puku",
-    // The provider stays hidden until the Puku integration has a connection.
-    activation: "auto",
-    package: PUKU.package,
-    integrationID: PUKU.integrationID,
-    settings: { baseURL: PUKU.apiBase },
-  }
-}
-
-/** Turns an OAuth token pair into the credential OpenCode stores. */
-function credential(tokens) {
-  return {
-    type: "oauth",
-    methodID: PUKU.oauthMethodID,
-    access: tokens.access,
-    refresh: tokens.refresh,
-    expires: tokens.expires,
-  }
-}
-
-/**
- * Starts the browser sign-in. The returned promise resolves with the stored
- * credential once Puku calls the loopback listener back.
- */
-async function authorize() {
-  const { verifier, challenge } = pkce()
-  const state = randomBytes(32).toString("base64url")
-  const listener = await listenForCallback()
-  const url = authorizeUrl({ challenge, state, redirectUri: listener.redirectUri })
-  openBrowser(url)
-
-  const callback = (async () => {
-    const result = await listener.result
-    await listener.close()
-    if (result.error) throw new Error(result.error)
-    if (result.state !== state) throw new Error("Puku returned an unexpected OAuth state")
-    if (!result.code) throw new Error("Puku did not return an authorization code")
-    const tokens = await exchangeCode({ code: result.code, redirectUri: listener.redirectUri, verifier, state })
-    return credential(tokens)
-  })()
-  // OpenCode awaits the credential once the browser reaches the callback. A
-  // rejection before that point must not surface as an unhandled rejection.
-  callback.catch(() => {})
-
-  return {
-    mode: "auto",
-    url,
-    instructions: "Complete the Puku sign-in in your browser. This window closes automatically.",
-    callback,
-  }
-}
-
-/** Renews an expired access token with the stored refresh token. */
-async function refresh(value) {
-  const tokens = await refreshAccessToken({ refresh: value.refresh })
-  return credential(tokens)
-}
+/** Storage key of the Puku API key. */
+const KEY = "puku-api-key"
 
 export const PukuPlugin = {
-  id: "opencode-puku",
+  id: "puku",
   async setup(ctx) {
-    await ctx.integration.transform((editor) => {
-      editor.method.update({
-        integrationID: PUKU.integrationID,
-        method: { id: PUKU.oauthMethodID, type: "oauth", label: "Login with Puku" },
-        authorize: () => authorize(),
-        refresh: (value) => refresh(value),
+    // Both are read by the provider transform, which OpenCode re-runs whenever
+    // the providers are reloaded. Update them before reloading.
+    let apiKey = await readKey(ctx)
+    let models = await listModels()
+
+    await ctx.provider.transform((editor) => {
+      editor.add({
+        info: providerInfo(apiKey),
+        models,
       })
     })
 
-    // The provider is published with the known models first, so a slow or
-    // failing catalog call never leaves OpenCode without a Puku provider.
-    let models = PUKU.fallbackModels.map(toModelInfo)
+    await ctx.command.transform((editor) => {
+      editor.add({
+        name: "puku-signin",
+        description: "Sign in to Puku AI and add the Puku models to OpenCode",
+        execute: async ({ sessionID }) => {
+          await report(ctx, sessionID, "Opening the Puku sign-in page in your browser...")
+          try {
+            apiKey = await signIn((url) => report(ctx, sessionID, `Sign in here: ${url}`))
+          } catch (error) {
+            await report(ctx, sessionID, `Puku sign-in failed: ${describe(error)}`)
+            return
+          }
+          await ctx.storage.set(KEY, apiKey)
+          models = await listModels()
+          await ctx.provider.reload()
+          await report(
+            ctx,
+            sessionID,
+            "Puku AI is connected. Pick a Puku model with /models, for example puku/puku-ai-2.8.",
+          )
+        },
+      })
 
-    await ctx.provider.transform((editor) => {
-      editor.add({ info: providerInfo(), models })
+      editor.add({
+        name: "puku-signout",
+        description: "Remove the Puku API key from OpenCode",
+        execute: async ({ sessionID }) => {
+          await ctx.storage.remove(KEY)
+          apiKey = undefined
+          await ctx.provider.reload()
+          await report(ctx, sessionID, "The Puku API key was removed.")
+        },
+      })
     })
-
-    const catalog = await listModels()
-    models = catalog
-    await ctx.provider.reload()
   },
 }
 
 export default PukuPlugin
+
+/** The provider definition OpenCode shows in its provider list. */
+function providerInfo(apiKey) {
+  return {
+    id: PUKU.providerID,
+    name: "Puku AI",
+    activation: "enabled",
+    package: PUKU.package,
+    // The runtime appends `/messages` to the base URL and sends the key as
+    // `x-api-key`, which is what Puku's inference API expects.
+    settings: {
+      baseURL: PUKU.apiBase,
+      ...(apiKey ? { apiKey } : {}),
+    },
+  }
+}
+
+/** The stored key, or the environment override that replaces it at startup. */
+async function readKey(ctx) {
+  const fromEnv = process.env.PUKU_AI_API_KEY ?? process.env.PUKU_API_KEY
+  if (fromEnv?.trim()) return fromEnv.trim()
+  const stored = await ctx.storage.get(KEY)
+  return typeof stored === "string" && stored ? stored : undefined
+}
+
+/** Runs the Puku OAuth flow and returns the minted API key. */
+async function signIn(onUrl) {
+  const { verifier, challenge } = pkce()
+  const state = randomBytes(32).toString("base64url")
+  const listener = await listenForCallback()
+  const redirectUri = listener.redirectUri
+  const url = authorizeUrl({ challenge, state, redirectUri })
+  openBrowser(url)
+  await onUrl?.(url)
+  try {
+    const result = await listener.result
+    if (result.error) throw new Error(result.error)
+    if (result.state !== state) throw new Error("Puku returned an unexpected OAuth state")
+    if (!result.code) throw new Error("Puku did not return an authorization code")
+    const tokens = await exchangeCode({ code: result.code, redirectUri, verifier, state })
+    return await createApiKey(tokens.access)
+  } finally {
+    await listener.close()
+  }
+}
+
+/** Tells the user what happened without spending a model turn. */
+async function report(ctx, sessionID, text) {
+  try {
+    await ctx.session.synthetic({ sessionID, text })
+  } catch {
+    // The status is a courtesy; a failure here must not break the command.
+  }
+}
+
+const describe = (error) => (error instanceof Error ? error.message : String(error))
