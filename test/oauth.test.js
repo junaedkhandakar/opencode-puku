@@ -16,6 +16,21 @@ async function withFetch(implementation, run) {
   }
 }
 
+/** Binds the first free port of the range and returns it with a close handle. */
+async function occupy(ports) {
+  for (const port of ports) {
+    const server = createServer()
+    const taken = await new Promise((resolve) => {
+      server.once("error", () => resolve(false))
+      server.listen(port, PUKU.callbackHost, () => resolve(true))
+    })
+    if (taken) return { port, close: () => new Promise((done) => server.close(done)) }
+    // The server never opened, so closing it would wait for an event that
+    // never comes. There is nothing to release.
+  }
+  throw new Error("no free port in the allowlist")
+}
+
 test("pkce derives a verifier and its challenge", () => {
   const { verifier, challenge } = pkce()
   assert.ok(verifier.length > 0)
@@ -62,19 +77,20 @@ test("listenForCallback binds a port of Puku's redirect allowlist", async () => 
 })
 
 test("listenForCallback skips a port that is already in use", async () => {
-  const busy = createServer()
-  await new Promise((resolve) => busy.listen(PUKU.callbackPorts[0], PUKU.callbackHost, resolve))
+  // Take the first port of the range that is still free, so the test also
+  // works while another process holds one of them.
+  const busy = await occupy(PUKU.callbackPorts)
   try {
     const listener = await listenForCallback()
     try {
       const redirect = new URL(listener.redirectUri)
-      assert.notEqual(Number(redirect.port), PUKU.callbackPorts[0])
+      assert.notEqual(Number(redirect.port), busy.port)
       assert.ok(PUKU.callbackPorts.includes(Number(redirect.port)))
     } finally {
       await listener.close()
     }
   } finally {
-    await new Promise((resolve) => busy.close(resolve))
+    await busy.close()
   }
 })
 
