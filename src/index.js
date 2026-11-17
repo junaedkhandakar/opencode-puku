@@ -43,13 +43,13 @@ export const PukuPlugin = {
           await report(ctx, sessionID, "Opening the Puku sign-in page in your browser...")
           try {
             apiKey = await signIn((url) => report(ctx, sessionID, `Sign in here: ${url}`))
+            await ctx.storage.set(KEY, apiKey)
+            models = await listModels()
+            await ctx.provider.reload()
           } catch (error) {
             await report(ctx, sessionID, `Puku sign-in failed: ${describe(error)}`)
             return
           }
-          await ctx.storage.set(KEY, apiKey)
-          models = await listModels()
-          await ctx.provider.reload()
           await report(
             ctx,
             sessionID,
@@ -123,8 +123,10 @@ async function signIn(onUrl) {
 async function report(ctx, sessionID, text) {
   try {
     await ctx.session.synthetic({ sessionID, text })
-  } catch {
-    // The status is a courtesy; a failure here must not break the command.
+  } catch (error) {
+    // The status is a courtesy, but a swallowed failure hides why a sign-in
+    // did not finish, so it also goes to the server log.
+    console.error(`[opencode-puku] ${text} (report failed: ${describe(error)})`)
   }
 }
 
