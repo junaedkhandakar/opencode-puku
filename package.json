@@ -11,6 +11,13 @@
     "src",
     "README.md"
   ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "puku",
+    "anthropic",
+    "provider"
+  ],
   "scripts": {
     "test": "node --test"
   },
