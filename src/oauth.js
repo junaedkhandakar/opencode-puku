@@ -38,7 +38,11 @@ export function authorizeUrl({ challenge, state, redirectUri, scopes = PUKU.scop
  * Starts the loopback callback listener and resolves with the redirect URL and
  * the received authorization code.
  */
-export async function listenForCallback({ timeoutMs = 300_000 } = {}) {
+// The window has to cover reading the page and signing in by hand, so it is
+// generous; PUKU_SIGNIN_TIMEOUT_MS can shorten or extend it.
+const DEFAULT_TIMEOUT_MS = Number(process.env.PUKU_SIGNIN_TIMEOUT_MS) > 0 ? Number(process.env.PUKU_SIGNIN_TIMEOUT_MS) : 900_000
+
+export async function listenForCallback({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
     if (url.pathname !== "/callback") {
