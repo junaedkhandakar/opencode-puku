@@ -36,13 +36,16 @@ export function authorizeUrl({ challenge, state, redirectUri, scopes = PUKU.scop
 
 /**
  * Starts the loopback callback listener and resolves with the redirect URL and
- * the received authorization code.
+ * the received authorization code. When `expectedState` is given, a callback
+ * carrying a different state came from an older sign-in tab: it is answered
+ * with an explanation and ignored, and the listener keeps waiting for the
+ * current attempt instead of failing the whole sign-in.
  */
 // The window has to cover reading the page and signing in by hand, so it is
 // generous; PUKU_SIGNIN_TIMEOUT_MS can shorten or extend it.
 const DEFAULT_TIMEOUT_MS = Number(process.env.PUKU_SIGNIN_TIMEOUT_MS) > 0 ? Number(process.env.PUKU_SIGNIN_TIMEOUT_MS) : 900_000
 
-export async function listenForCallback({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+export async function listenForCallback({ timeoutMs = DEFAULT_TIMEOUT_MS, expectedState } = {}) {
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
     if (url.pathname !== "/callback") {
@@ -53,6 +56,17 @@ export async function listenForCallback({ timeoutMs = DEFAULT_TIMEOUT_MS } = {})
     const code = url.searchParams.get("code")
     const state = url.searchParams.get("state")
     const error = url.searchParams.get("error")
+    if (expectedState && state !== expectedState) {
+      response.writeHead(400, { "content-type": "text/html; charset=utf-8" })
+      response.end(
+        `<!doctype html><meta charset="utf-8"><title>Puku</title>` +
+          `<body style="font-family:system-ui;padding:40px">` +
+          `<h2>This sign-in tab is out of date</h2>` +
+          `<p>Close it and finish the newest Puku sign-in tab instead.</p>` +
+          `</body>`,
+      )
+      return
+    }
     response.writeHead(error ? 400 : 200, { "content-type": "text/html; charset=utf-8" })
     response.end(
       `<!doctype html><meta charset="utf-8"><title>Puku</title>` +

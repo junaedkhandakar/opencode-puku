@@ -102,7 +102,7 @@ async function readKey(ctx) {
 async function signIn(onUrl) {
   const { verifier, challenge } = pkce()
   const state = randomBytes(32).toString("base64url")
-  const listener = await listenForCallback()
+  const listener = await listenForCallback({ expectedState: state })
   const redirectUri = listener.redirectUri
   const url = authorizeUrl({ challenge, state, redirectUri })
   openBrowser(url)

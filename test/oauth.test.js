@@ -123,6 +123,27 @@ test("listenForCallback reports an OAuth error", async () => {
   }
 })
 
+test("listenForCallback ignores a stale tab's state and keeps waiting", async () => {
+  const listener = await listenForCallback({ expectedState: "current-state" })
+  try {
+    // An older browser tab redirects with its own state: rejected, but the
+    // listener must stay open for the current attempt.
+    const stale = await fetch(`${listener.redirectUri}?code=stale-code&state=stale-state`)
+    assert.equal(stale.status, 400)
+    assert.match(await stale.text(), /out of date/i)
+
+    const fresh = await fetch(`${listener.redirectUri}?code=fresh-code&state=current-state`)
+    assert.equal(fresh.status, 200)
+
+    const result = await listener.result
+    assert.equal(result.code, "fresh-code")
+    assert.equal(result.state, "current-state")
+    assert.equal(result.error, null)
+  } finally {
+    await listener.close()
+  }
+})
+
 test("listenForCallback answers an unknown path with a 404", async () => {
   const listener = await listenForCallback()
   try {
