@@ -4,6 +4,16 @@ export const PUKU = {
   /** Provider ID used in model references such as `puku/puku-ai-2.8`. */
   providerID: "puku",
   /**
+   * Integration ID of the native OpenCode integration. OpenCode stores the
+   * credential under this ID and shows the integration in `opencode auth`.
+   */
+  integrationID: "puku",
+  /**
+   * Method ID of the OAuth sign-in method. The key method has no ID: a key
+   * method is identified by its type.
+   */
+  oauthMethodID: "browser",
+  /**
    * OAuth client registered by the Puku CLI. Puku's OAuth server rejects every
    * other client ID, so the plugin borrows this client's identity.
    */
