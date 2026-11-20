@@ -24,6 +24,11 @@ export const PUKU = {
   apiKeyUrl: "https://puku.sh/api/oauth/puku_cli/create_api_key",
   /** Anthropic-compatible inference API. The runtime appends `/messages` to it. */
   apiBase: "https://api-cli.puku.sh/v1",
+  /**
+   * Beta flag Puku's own CLI sends with every OAuth-authenticated request.
+   * The Anthropic runtime merges this with the betas it needs itself.
+   */
+  anthropicBeta: "oauth-2025-04-20",
   /** Runtime package that speaks the Anthropic Messages protocol. */
   package: "@opencode/ai/providers/anthropic-compatible",
   /**
