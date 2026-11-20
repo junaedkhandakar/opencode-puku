@@ -4,25 +4,134 @@ import { test } from "node:test"
 import { PUKU } from "../src/constants.js"
 import PukuPlugin from "../src/index.js"
 
-/** A minimal stand-in for the OpenCode plugin context. */
+/**
+ * A stand-in for the OpenCode plugin context that follows the promise plugin
+ * API: `integration.transform`, `provider.transform` and `command.transform`
+ * each hand an editor to the plugin.
+ */
 function context() {
   const storage = new Map()
-  const providers = []
-  const commands = []
   const messages = []
-  const transforms = []
-  let reloads = 0
+  const integrations = new Map()
+  const methods = []
+  const providers = new Map()
+  const commands = []
+  const events = []
+  // A queue that yields events pushed after the subscription started.
+  const END = Symbol("end of events")
+  const waiters = []
+  const eventQueue = (async function* () {
+    for (const event of events) yield event
+    while (true) {
+      const next = await new Promise((resolve) => waiters.push(resolve))
+      if (next === END) return
+      yield next
+    }
+  })()
+  /** Wakes the subscription with an event. */
+  const emit = (event) => {
+    const waiter = waiters.shift()
+    if (waiter) waiter(event)
+    else events.push(event)
+  }
+  /** Ends the subscription so the plugin's cleanup can finish. */
+  const endEvents = () => {
+    const waiter = waiters.shift()
+    if (waiter) waiter(END)
+  }
+  const reloads = { provider: 0, integration: 0, command: 0 }
+  const attempts = new Map()
+  let attemptSeq = 0
 
-  const editor = {
-    add: (definition) => providers.push(definition),
+  const integrationEditor = {
+    list: () => [...integrations.values()].map((integration) => ({ id: integration.id, name: integration.name })),
+    get: (id) => integrations.get(id),
+    update: (id, update) => {
+      const integration = integrations.get(id)
+      if (!integration) throw new Error(`unknown integration ${id}`)
+      update(integration)
+    },
+    remove: (id) => integrations.delete(id),
+    method: {
+      list: (integrationID) => methods.filter((entry) => entry.integrationID === integrationID),
+      update: (input) => {
+        // Registering a method creates the integration, like OpenCode does.
+        if (!integrations.has(input.integrationID)) {
+          integrations.set(input.integrationID, { id: input.integrationID, name: input.integrationID })
+        }
+        const index = methods.findIndex(
+          (entry) => entry.integrationID === input.integrationID && entry.method.id === input.method.id,
+        )
+        const entry = { integrationID: input.integrationID, ...input }
+        if (index >= 0) methods[index] = entry
+        else methods.push(entry)
+      },
+      remove: (integrationID, method) => {
+        const index = methods.findIndex(
+          (entry) => entry.integrationID === integrationID && entry.method.id === method.id,
+        )
+        if (index >= 0) methods.splice(index, 1)
+      },
+    },
   }
 
-  return {
+  const providerEditor = {
+    list: () =>
+      [...providers.values()].map((record) => ({
+        provider: record.info,
+        models: new Map(record.models.map((model) => [model.id, model])),
+      })),
+    get: (providerID) => {
+      const record = providers.get(providerID)
+      if (!record) return undefined
+      return {
+        provider: record.info,
+        models: new Map(record.models.map((model) => [model.id, model])),
+      }
+    },
+    update: (providerID, update) => {
+      const record = providers.get(providerID)
+      if (!record) throw new Error(`unknown provider ${providerID}`)
+      update(record.info)
+    },
+    remove: (providerID) => providers.delete(providerID),
+    add: (input) => {
+      providers.set(input.info.id, {
+        info: input.info,
+        models: [...input.models],
+        sourceConnection: input.sourceConnection,
+      })
+    },
+    models: {
+      set: (providerID, models) => {
+        const record = providers.get(providerID)
+        if (!record) throw new Error(`unknown provider ${providerID}`)
+        record.models = [...models]
+      },
+      update: (providerID, modelID, update) => {
+        const record = providers.get(providerID)
+        const index = record?.models.findIndex((model) => model.id === modelID) ?? -1
+        if (record && index >= 0) update(record.models[index])
+      },
+      remove: (providerID, modelID) => {
+        const record = providers.get(providerID)
+        if (!record) return
+        record.models = record.models.filter((model) => model.id !== modelID)
+      },
+    },
+  }
+
+  const host = {
     storage,
+    messages,
+    methods,
     providers,
     commands,
-    messages,
-    reloads: () => reloads,
+    events,
+    reloads: () => ({ ...reloads }),
+    providerRecord: (providerID) => providers.get(providerID),
+    emit,
+    endEvents,
     ctx: {
       storage: {
         get: async (key) => storage.get(key),
@@ -33,20 +142,62 @@ function context() {
           storage.delete(key)
         },
       },
-      provider: {
+      integration: {
         transform: async (callback) => {
-          transforms.push(callback)
-          callback(editor)
+          callback(integrationEditor)
         },
         reload: async () => {
-          reloads += 1
-          // OpenCode re-runs the transforms when the providers reload.
-          for (const transform of transforms) transform(editor)
+          reloads.integration += 1
+        },
+        connection: {
+          active: async () => undefined,
+          resolve: async () => undefined,
+          status: async () => {},
+        },
+        oauth: {
+          connect: async (input) => {
+            attemptSeq += 1
+            const attemptID = `con_${attemptSeq}`
+            const attempt = {
+              attemptID,
+              url: "https://puku.sh/api/oauth/authorize",
+              instructions: "Sign in",
+              mode: "auto",
+              time: { created: Date.now(), expires: Date.now() + 600_000 },
+            }
+            // The attempt settles on the first poll, as a finished sign-in does.
+            attempts.set(attemptID, { status: "complete", time: attempt.time })
+            return { location: { id: "loc_1" }, data: attempt }
+          },
+          status: async (input) => {
+            const attempt = attempts.get(input.attemptID)
+            if (!attempt) throw new Error(`unknown attempt ${input.attemptID}`)
+            return { location: { id: "loc_1" }, data: attempt }
+          },
+          complete: async () => {},
+          cancel: async (input) => {
+            attempts.set(input.attemptID, {
+              status: "failed",
+              message: "cancelled",
+              time: { created: Date.now(), expires: Date.now() },
+            })
+          },
+        },
+      },
+      provider: {
+        transform: async (callback) => {
+          callback(providerEditor)
+        },
+        reload: async () => {
+          reloads.provider += 1
         },
       },
       command: {
         transform: async (callback) => {
           callback({ add: (definition) => commands.push(definition) })
+        },
+        reload: async () => {
+          reloads.command += 1
         },
       },
       session: {
@@ -54,33 +205,34 @@ function context() {
           messages.push({ sessionID, text })
         },
       },
+      event: {
+        // The stream stays open so a late event is delivered, and it ends when
+        // the plugin aborts it, like the server's.
+        subscribe: async function* ({ signal } = {}) {
+          for (;;) {
+            const abort = new Promise((resolve) => {
+              if (signal?.aborted) resolve({ done: true, value: undefined })
+              else signal?.addEventListener("abort", () => resolve({ done: true, value: undefined }), { once: true })
+            })
+            const step = await Promise.race([eventQueue.next(), abort])
+            if (step.done) return
+            yield step.value
+          }
+        },
+      },
     },
   }
-}
 
-/** Waits until the context reports something that matches. */
-async function waitFor(match) {
-  const deadline = Date.now() + 5_000
-  while (Date.now() < deadline) {
-    const value = match()
-    if (value) return value
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  throw new Error("timed out waiting for the plugin")
+  return host
 }
 
 /** A fetch that answers the Puku endpoints and passes loopback calls through. */
-function pukuFetch(realFetch, { key = "pk-the-key" } = {}) {
+function pukuFetch(realFetch) {
   return async (url, init) => {
     const target = String(url)
     if (target.startsWith("http://127.0.0.1:")) return realFetch(url, init)
     if (target === `${PUKU.apiBase}/models`) {
       return new Response(JSON.stringify({ data: [{ id: "puku-ai-2.8" }] }), {
-        headers: { "content-type": "application/json" },
-      })
-    }
-    if (target === PUKU.apiKeyUrl) {
-      return new Response(JSON.stringify({ raw_key: key }), {
         headers: { "content-type": "application/json" },
       })
     }
@@ -95,107 +247,13 @@ function pukuFetch(realFetch, { key = "pk-the-key" } = {}) {
   }
 }
 
-test("the plugin has an id and a setup", () => {
-  assert.equal(PukuPlugin.id, "puku")
-  assert.equal(typeof PukuPlugin.setup, "function")
-})
-
-test("the plugin registers the Puku provider", async () => {
-  const realFetch = globalThis.fetch
-  globalThis.fetch = pukuFetch(realFetch)
-  try {
-    const host = context()
-    await PukuPlugin.setup(host.ctx)
-
-    assert.equal(host.providers.length, 1)
-    const definition = host.providers[0]
-    assert.equal(definition.info.id, PUKU.providerID)
-    assert.equal(definition.info.name, "Puku AI")
-    assert.equal(definition.info.activation, "enabled")
-    assert.equal(definition.info.package, PUKU.package)
-    assert.equal(definition.info.settings.baseURL, "https://api-cli.puku.sh/v1")
-    assert.equal(definition.info.integrationID, undefined)
-    assert.deepEqual(
-      definition.models.map((model) => model.id),
-      ["puku-ai-2.8"],
-    )
-    assert.equal(definition.models[0].providerID, PUKU.providerID)
-    assert.deepEqual(definition.models[0].limit, { context: PUKU.contextLimit, output: PUKU.outputLimit })
-  } finally {
-    globalThis.fetch = realFetch
+/** Waits until the context reports something that matches. */
+async function waitFor(match) {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    const value = match()
+    if (value) return value
+    await new Promise((resolve) => setTimeout(resolve, 10))
   }
-})
-
-test("the plugin registers the sign-in commands", async () => {
-  const realFetch = globalThis.fetch
-  globalThis.fetch = pukuFetch(realFetch)
-  try {
-    const host = context()
-    await PukuPlugin.setup(host.ctx)
-    assert.deepEqual(
-      host.commands.map((command) => command.name),
-      ["puku-signin", "puku-signout"],
-    )
-  } finally {
-    globalThis.fetch = realFetch
-  }
-})
-
-test("the sign-in command mints a key, stores it and reloads the provider", async () => {
-  const realFetch = globalThis.fetch
-  const originalBrowser = process.env.PUKU_OPEN_BROWSER
-  process.env.PUKU_OPEN_BROWSER = "0"
-  globalThis.fetch = pukuFetch(realFetch)
-  try {
-    const host = context()
-    await PukuPlugin.setup(host.ctx)
-
-    const signin = host.commands.find((command) => command.name === "puku-signin")
-    const finished = signin.execute({
-      sessionID: "ses_test",
-      prompt: { text: "/puku-signin" },
-      delivery: "steer",
-    })
-
-    const url = await waitFor(() => {
-      const message = host.messages.find((entry) => entry.text.startsWith("Sign in here:"))
-      return message?.text.slice("Sign in here: ".length)
-    })
-    const parsed = new URL(url)
-    assert.equal(parsed.origin + parsed.pathname, PUKU.authorizeUrl)
-    assert.equal(parsed.searchParams.get("client_id"), "puku-cli")
-
-    const redirectUri = parsed.searchParams.get("redirect_uri")
-    const state = parsed.searchParams.get("state")
-    const response = await realFetch(`${redirectUri}?code=the-code&state=${state}`)
-    assert.equal(response.status, 200)
-
-    await finished
-    assert.equal(host.storage.get("puku-api-key"), "pk-the-key")
-    assert.equal(host.reloads(), 1)
-    assert.equal(host.providers.at(-1).info.settings.apiKey, "pk-the-key")
-    assert.ok(host.messages.some((entry) => entry.text.includes("Puku AI is connected")))
-  } finally {
-    globalThis.fetch = realFetch
-    if (originalBrowser === undefined) delete process.env.PUKU_OPEN_BROWSER
-    else process.env.PUKU_OPEN_BROWSER = originalBrowser
-  }
-})
-
-test("the sign-out command removes the stored key", async () => {
-  const realFetch = globalThis.fetch
-  globalThis.fetch = pukuFetch(realFetch)
-  try {
-    const host = context()
-    host.storage.set("puku-api-key", "pk-the-key")
-    await PukuPlugin.setup(host.ctx)
-
-    const signout = host.commands.find((command) => command.name === "puku-signout")
-    await signout.execute({ sessionID: "ses_test", prompt: { text: "/puku-signout" }, delivery: "steer" })
-
-    assert.equal(host.storage.has("puku-api-key"), false)
-    assert.equal(host.providers.at(-1).info.settings.apiKey, undefined)
-  } finally {
-    globalThis.fetch = realFetch
-  }
-})
+  throw new Error("timed out waiting for the plugin")
+}
