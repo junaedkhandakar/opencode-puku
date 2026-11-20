@@ -12,9 +12,6 @@ import { createServer } from "node:http"
 
 import { PUKU } from "./constants.js"
 
-/** Puku's own SDK talks to this token endpoint; the CLI uses the one above. */
-const SDK_TOKEN_URL = "https://puku.sh/api/oauth/v1/oauth/token"
-
 export function pkce() {
   const verifier = randomBytes(32).toString("base64url")
   const challenge = createHash("sha256").update(verifier).digest("base64url")
@@ -160,7 +157,6 @@ export async function exchangeCode({ code, redirectUri, verifier, state }) {
   const tokens = await postToken([
     { url: PUKU.tokenUrl, body, encoding: "form" },
     { url: PUKU.tokenUrl, body, encoding: "json" },
-    { url: SDK_TOKEN_URL, body, encoding: "form" },
   ])
   if (!tokens.access_token) throw new Error("Puku did not return an access token")
   return {
@@ -181,7 +177,6 @@ export async function refreshAccessToken({ refresh }) {
   const tokens = await postToken([
     { url: PUKU.tokenUrl, body, encoding: "form" },
     { url: PUKU.tokenUrl, body, encoding: "json" },
-    { url: SDK_TOKEN_URL, body, encoding: "form" },
   ])
   if (!tokens.access_token) throw new Error("Puku did not return an access token")
   return {
@@ -192,9 +187,9 @@ export async function refreshAccessToken({ refresh }) {
 }
 
 /**
- * Posts to the token endpoint until one encoding is accepted. Puku's CLI sends
- * JSON, its SDK sends a form body, and the endpoint answers both, but only one
- * of them is served at a time on some deployments.
+ * Posts to the token endpoint until one encoding is accepted. Puku's endpoint
+ * only reads a form body; the JSON body is kept as a fallback in case that
+ * changes.
  */
 async function postToken(attempts) {
   let failure
