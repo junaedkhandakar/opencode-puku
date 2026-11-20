@@ -14,10 +14,10 @@ export const PUKU = {
    */
   oauthMethodID: "browser",
   /**
-   * OAuth client registered by the Puku CLI. Puku's OAuth server rejects every
-   * other client ID, so the plugin borrows this client's identity.
+   * OAuth client of Puku's own CLI. The plugin borrows this client's identity,
+   * so the redirect URIs it registered stay valid.
    */
-  clientID: "puku-cli",
+  clientID: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
   authorizeUrl: "https://puku.sh/api/oauth/authorize",
   tokenUrl: "https://puku.sh/api/oauth/token",
   /** Mints a long-lived API key from an OAuth access token. */
