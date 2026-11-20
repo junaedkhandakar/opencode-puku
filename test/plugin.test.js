@@ -1,4 +1,4 @@
-import assert from "node:assert/strict"
+﻿import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { PUKU } from "../src/constants.js"
@@ -257,3 +257,231 @@ async function waitFor(match) {
   }
   throw new Error("timed out waiting for the plugin")
 }
+
+test("the plugin has an id and a setup", () => {
+  assert.equal(PukuPlugin.id, "puku")
+  assert.equal(typeof PukuPlugin.setup, "function")
+})
+
+test("the plugin registers the Puku integration with an OAuth and a key method", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = pukuFetch(realFetch)
+  try {
+    const host = context()
+    await PukuPlugin.setup(host.ctx)
+
+    const oauth = host.methods.find(
+      (entry) => entry.integrationID === PUKU.integrationID && entry.method.type === "oauth",
+    )
+    assert.ok(oauth, "an OAuth method is registered")
+    assert.equal(oauth.method.id, PUKU.oauthMethodID)
+    assert.equal(oauth.method.label, "Sign in with Puku")
+    assert.equal(typeof oauth.authorize, "function")
+    assert.equal(typeof oauth.refresh, "function")
+
+    const key = host.methods.find(
+      (entry) => entry.integrationID === PUKU.integrationID && entry.method.type === "key",
+    )
+    assert.ok(key, "a key method is registered")
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("the plugin registers the Puku provider with the discovered models", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = pukuFetch(realFetch)
+  try {
+    const host = context()
+    await PukuPlugin.setup(host.ctx)
+
+    const record = host.providerRecord(PUKU.providerID)
+    assert.ok(record, "the Puku provider is published")
+    assert.equal(record.info.id, PUKU.providerID)
+    assert.equal(record.info.name, "Puku AI")
+    assert.equal(record.info.activation, "enabled")
+    assert.equal(record.info.package, PUKU.package)
+    assert.equal(record.info.settings.baseURL, PUKU.apiBase)
+    assert.equal(record.info.integrationID, PUKU.integrationID)
+    // Puku's own CLI sends this beta flag with every OAuth request.
+    assert.equal(record.info.headers["anthropic-beta"], PUKU.anthropicBeta)
+
+    assert.deepEqual(
+      record.models.map((model) => model.id),
+      ["puku-ai-2.8"],
+    )
+    assert.equal(record.models[0].providerID, PUKU.providerID)
+    assert.deepEqual(record.models[0].limit, { context: PUKU.contextLimit, output: PUKU.outputLimit })
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("the plugin registers the login and status commands", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = pukuFetch(realFetch)
+  try {
+    const host = context()
+    await PukuPlugin.setup(host.ctx)
+    assert.deepEqual(
+      host.commands.map((command) => command.name),
+      ["puku-login", "puku-status"],
+    )
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("the login command starts a native OAuth attempt and reports the result", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = pukuFetch(realFetch)
+  try {
+    const host = context()
+    await PukuPlugin.setup(host.ctx)
+
+    const login = host.commands.find((command) => command.name === "puku-login")
+    const finished = login.execute({
+      sessionID: "ses_test",
+      prompt: { text: "/puku-login" },
+      delivery: "steer",
+    })
+
+    // The attempt stays pending, so the status poll keeps waiting.
+    await waitFor(() => host.messages.length > 0 || host.reloads().provider > 0)
+
+    assert.ok(host.ctx.integration.oauth)
+    await finished
+
+    assert.ok(
+      host.messages.some((entry) => entry.text.includes("Puku AI is connected")),
+      `expected a connected message, got ${JSON.stringify(host.messages)}`,
+    )
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("the status command reports a disconnected account", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = pukuFetch(realFetch)
+  try {
+    const host = context()
+    await PukuPlugin.setup(host.ctx)
+
+    const status = host.commands.find((command) => command.name === "puku-status")
+    await status.execute({ sessionID: "ses_test", prompt: { text: "/puku-status" }, delivery: "steer" })
+
+    assert.equal(host.messages.length, 1)
+    assert.match(host.messages[0].text, /not connected/i)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("the cleanup closes the loopback listeners", async () => {
+  const realFetch = globalThis.fetch
+  const originalBrowser = process.env.PUKU_OPEN_BROWSER
+  process.env.PUKU_OPEN_BROWSER = "0"
+  globalThis.fetch = pukuFetch(realFetch)
+  try {
+    const host = context()
+    const cleanup = await PukuPlugin.setup(host.ctx)
+    assert.equal(typeof cleanup, "function")
+
+    const oauth = host.methods.find((entry) => entry.method.type === "oauth")
+    const authorization = await oauth.authorize({})
+    // The listener holds a port until it is closed.
+    const redirect = new URL(authorization.url).searchParams.get("redirect_uri")
+    assert.ok(redirect, "the authorization URL carries a redirect URI")
+
+    await cleanup()
+  } finally {
+    globalThis.fetch = realFetch
+    if (originalBrowser === undefined) delete process.env.PUKU_OPEN_BROWSER
+    else process.env.PUKU_OPEN_BROWSER = originalBrowser
+  }
+})
+
+test("a credential update reloads the provider and republishes the models", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = pukuFetch(realFetch)
+  try {
+    const host = context()
+    await PukuPlugin.setup(host.ctx)
+
+    const before = host.reloads().provider
+    host.emit({
+      type: "credential.updated",
+      properties: { integrationID: PUKU.integrationID, credentialID: "cred_1" },
+    })
+
+    await waitFor(() => host.reloads().provider > before)
+    const record = host.providerRecord(PUKU.providerID)
+    assert.deepEqual(
+      record.models.map((model) => model.id),
+      ["puku-ai-2.8"],
+    )
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("the OAuth method refreshes an expired credential", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = pukuFetch(realFetch)
+  try {
+    const host = context()
+    await PukuPlugin.setup(host.ctx)
+
+    const oauth = host.methods.find((entry) => entry.method.type === "oauth")
+    const refreshed = await oauth.refresh({
+      type: "oauth",
+      methodID: PUKU.oauthMethodID,
+      access: "old-access",
+      refresh: "the-refresh",
+      expires: Date.now() - 1_000,
+    })
+
+    assert.equal(refreshed.type, "oauth")
+    assert.equal(refreshed.methodID, PUKU.oauthMethodID)
+    assert.equal(refreshed.access, "the-access")
+    assert.equal(refreshed.refresh, "the-refresh")
+    assert.ok(refreshed.expires > Date.now())
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test("the OAuth method exchanges the callback code for a credential", async () => {
+  const realFetch = globalThis.fetch
+  const originalBrowser = process.env.PUKU_OPEN_BROWSER
+  process.env.PUKU_OPEN_BROWSER = "0"
+  globalThis.fetch = pukuFetch(realFetch)
+  try {
+    const host = context()
+    await PukuPlugin.setup(host.ctx)
+
+    const oauth = host.methods.find((entry) => entry.method.type === "oauth")
+    const authorization = await oauth.authorize({})
+    assert.equal(authorization.mode, "auto")
+    assert.ok(authorization.url.startsWith(PUKU.authorizeUrl))
+    assert.ok(authorization.instructions)
+
+    // The browser redirects back to the loopback listener with a code.
+    const redirect = new URL(authorization.url).searchParams.get("redirect_uri")
+    const state = new URL(authorization.url).searchParams.get("state")
+    const response = await fetch(`${redirect}?code=the-code&state=${state}`)
+    assert.equal(response.status, 200)
+
+    const credential = await authorization.callback
+    assert.equal(credential.type, "oauth")
+    assert.equal(credential.methodID, PUKU.oauthMethodID)
+    assert.equal(credential.access, "the-access")
+    assert.equal(credential.refresh, "the-refresh")
+    assert.ok(credential.expires > Date.now())
+  } finally {
+    globalThis.fetch = realFetch
+    if (originalBrowser === undefined) delete process.env.PUKU_OPEN_BROWSER
+    else process.env.PUKU_OPEN_BROWSER = originalBrowser
+  }
+})
