@@ -96,10 +96,49 @@ export const PukuPlugin = {
     // integration exists.
     await publishModels(ctx)
 
+    await ctx.command.transform((editor) => {
+      editor.add({
+        name: "puku-login",
+        description: "Sign in to Puku AI and add the Puku models to OpenCode",
+        async execute({ sessionID }) {
+          try {
+            const attempt = await ctx.integration.oauth.connect({
+              integrationID: PUKU.integrationID,
+              methodID: PUKU.oauthMethodID,
+            })
+            const status = await waitForAttempt(ctx, attempt.data.attemptID)
+            await report(
+              ctx,
+              sessionID,
+              status.data.status === "complete"
+                ? "Puku AI is connected. Pick a Puku model with /models, for example `puku/puku-ai-2.8`."
+                : `Puku sign-in ${status.data.status}${status.data.message ? `: ${status.data.message}` : "."}`,
+            )
+          } catch (error) {
+            await report(ctx, sessionID, `Puku sign-in failed: ${describe(error)}`)
+          }
+        },
+      })
+
+    })
+
+    const events = (async () => {
+      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+        if (event.type !== "credential.updated" && event.type !== "credential.switched") continue
+        try {
+          await publishModels(ctx)
+          await ctx.provider.reload()
+        } catch {
+          // A failed refresh keeps the previous model list; the next sign-in retries it.
+        }
+      }
+    })().catch(() => {})
+
     return async () => {
       controller.abort()
       for (const listener of listeners) await listener.close()
       listeners.clear()
+      await events
     }
   },
 }
@@ -139,3 +178,28 @@ function providerInfo() {
     headers: { "anthropic-beta": PUKU.anthropicBeta },
   }
 }
+
+/** Polls an OAuth attempt until it leaves the pending state. */
+async function waitForAttempt(ctx, attemptID) {
+  for (;;) {
+    const status = await ctx.integration.oauth.status({
+      integrationID: PUKU.integrationID,
+      attemptID,
+    })
+    if (status.data.status !== "pending") return status
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+}
+
+/** Tells the user what happened without spending a model turn. */
+async function report(ctx, sessionID, text) {
+  try {
+    await ctx.session.synthetic({ sessionID, text })
+  } catch (error) {
+    // The status is a courtesy, but a swallowed failure hides why a sign-in
+    // did not finish, so it also goes to the server log.
+    console.error(`[opencode-puku] ${text} (report failed: ${describe(error)})`)
+  }
+}
+
+const describe = (error) => (error instanceof Error ? error.message : String(error))
