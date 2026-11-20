@@ -18,8 +18,8 @@ export const PUKU = {
    * so the redirect URIs it registered stay valid.
    */
   clientID: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-  authorizeUrl: "https://puku.sh/api/oauth/authorize",
-  tokenUrl: "https://puku.sh/api/oauth/token",
+  /** Puku AI's sign-in page. */
+  authorizeUrl: "https://chat.puku.sh/api/oauth/authorize",
   /** Mints a long-lived API key from an OAuth access token. */
   apiKeyUrl: "https://puku.sh/api/oauth/puku_cli/create_api_key",
   /** Anthropic-compatible inference API. The runtime appends `/messages` to it. */
