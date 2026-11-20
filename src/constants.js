@@ -40,8 +40,9 @@ export const PUKU = {
   /** Host of the callback listener. The allowlist covers 127.0.0.1 as well. */
   callbackHost: "127.0.0.1",
   /**
-   * `org:create_api_key` mints the inference key, `user:profile` identifies the
-   * account and `user:inference` allows inference.
+   * `user:inference` allows inference, `user:profile` identifies the account
+   * and `org:create_api_key` lets the account mint an inference key. These are
+   * the scopes Puku's own CLI asks for.
    */
   scopes: ["org:create_api_key", "user:profile", "user:inference"],
   /** Puku caps output at 8192 tokens for every model it serves. */
