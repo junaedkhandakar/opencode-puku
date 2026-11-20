@@ -37,7 +37,11 @@ export const PUKU = {
    * any other port is rejected when the authorization code is exchanged.
    */
   callbackPorts: Array.from({ length: 20 }, (_, index) => 3118 + index),
-  /** Host of the callback listener. The allowlist covers 127.0.0.1 as well. */
+  /**
+   * Host of the callback listener. `127.0.0.1` is an IPv4 literal, so it never
+   * resolves to an address family the listener missed; Puku's allowlist covers
+   * it as well as `localhost`.
+   */
   callbackHost: "127.0.0.1",
   /**
    * `user:inference` allows inference, `user:profile` identifies the account
