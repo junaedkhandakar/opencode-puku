@@ -120,6 +120,22 @@ export const PukuPlugin = {
         },
       })
 
+      editor.add({
+        name: "puku-status",
+        description: "Show whether Puku AI is connected",
+        async execute({ sessionID }) {
+          const connection = await ctx.integration.connection.active(PUKU.integrationID)
+          const models = await listModels()
+          await report(
+            ctx,
+            sessionID,
+            connection
+              ? `Puku AI is connected. ${models.length} model(s) available: ${models.map((model) => model.id).join(", ")}.`
+              : "Puku AI is not connected. Run /puku-login to sign in.",
+          )
+        },
+      })
+
     })
 
     const events = (async () => {
