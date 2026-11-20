@@ -49,7 +49,7 @@ test("authorizeUrl asks Puku for a PKCE authorization code", () => {
     }),
   )
   assert.equal(url.origin + url.pathname, PUKU.authorizeUrl)
-  assert.equal(url.searchParams.get("client_id"), "puku-cli")
+  assert.equal(url.searchParams.get("client_id"), PUKU.clientID)
   assert.equal(url.searchParams.get("response_type"), "code")
   assert.equal(url.searchParams.get("code_challenge"), "the-challenge")
   assert.equal(url.searchParams.get("code_challenge_method"), "S256")
@@ -189,7 +189,7 @@ test("exchangeCode sends the authorization code as Puku's CLI sends it", async (
   assert.equal(form.get("grant_type"), "authorization_code")
   assert.equal(form.get("code"), "the-code")
   assert.equal(form.get("redirect_uri"), "http://127.0.0.1:3118/callback")
-  assert.equal(form.get("client_id"), "puku-cli")
+  assert.equal(form.get("client_id"), PUKU.clientID)
   assert.equal(form.get("code_verifier"), "the-verifier")
   assert.equal(form.get("state"), "the-state")
 
@@ -200,7 +200,7 @@ test("exchangeCode sends the authorization code as Puku's CLI sends it", async (
     grant_type: "authorization_code",
     code: "the-code",
     redirect_uri: "http://127.0.0.1:3118/callback",
-    client_id: "puku-cli",
+    client_id: PUKU.clientID,
     code_verifier: "the-verifier",
     state: "the-state",
   })
