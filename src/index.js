@@ -1,133 +1,87 @@
-// OpenCode plugin that exposes the Puku models.
+// Puku AI provider for OpenCode.
 //
-// Puku has no entry in the models.dev catalog and an OpenCode plugin cannot
-// create an integration, so the plugin registers the provider itself:
+// Registers `puku` as an integration and as a provider (Anthropic-compatible
+// Messages API), then adds the Puku models to the model list.
 //
-// - the provider points at Puku's Anthropic-compatible API and carries the API
-//   key, which the runtime sends as `x-api-key`;
-// - `/puku-signin` runs the Puku OAuth + PKCE flow in the browser, mints an
-//   API key from the access token and stores it.
+// Two sign-in paths are offered by OpenCode itself:
+//
+// - `opencode auth login puku` runs the Puku OAuth + PKCE flow in the browser.
+//   The stored credential is an OAuth token, which the runtime sends to Puku as
+//   `Authorization: Bearer <token>`; the plugin refreshes it when it expires.
+// - `opencode auth login puku` with the API-key method stores a Puku API key,
+//   which the runtime sends as `x-api-key`.
 //
 // The models are used as `puku/<model-id>`, for example `puku/puku-ai-2.8`.
 
 import { randomBytes } from "node:crypto"
 
-import { listModels } from "./api.js"
 import { PUKU } from "./constants.js"
-import { createApiKey } from "./keys.js"
 import { authorizeUrl, exchangeCode, listenForCallback, openBrowser, pkce } from "./oauth.js"
-
-/** Storage key of the Puku API key. */
-const KEY = "puku-api-key"
 
 export const PukuPlugin = {
   id: "puku",
   async setup(ctx) {
-    // Both are read by the provider transform, which OpenCode re-runs whenever
-    // the providers are reloaded. Update them before reloading.
-    let apiKey = await readKey(ctx)
-    let models = await listModels()
+    const controller = new AbortController()
+    // A cancelled attempt leaves its loopback listener behind unless the plugin closes it.
+    const listeners = new Set()
 
-    await ctx.provider.transform((editor) => {
-      editor.add({
-        info: providerInfo(apiKey),
-        models,
-      })
-    })
-
-    await ctx.command.transform((editor) => {
-      editor.add({
-        name: "puku-signin",
-        description: "Sign in to Puku AI and add the Puku models to OpenCode",
-        execute: async ({ sessionID }) => {
-          await report(ctx, sessionID, "Opening the Puku sign-in page in your browser...")
-          try {
-            apiKey = await signIn((url) => report(ctx, sessionID, `Sign in here: ${url}`))
-            await ctx.storage.set(KEY, apiKey)
-            models = await listModels()
-            await ctx.provider.reload()
-          } catch (error) {
-            await report(ctx, sessionID, `Puku sign-in failed: ${describe(error)}`)
-            return
+    await ctx.integration.transform((editor) => {
+      // Registering a method creates the integration, so the integration ID
+      // needs no separate `editor.update` call.
+      editor.method.update({
+        integrationID: PUKU.integrationID,
+        method: {
+          id: PUKU.oauthMethodID,
+          type: "oauth",
+          label: "Sign in with Puku",
+        },
+        async authorize() {
+          const { verifier, challenge } = pkce()
+          const state = randomBytes(32).toString("base64url")
+          const listener = await listenForCallback({ expectedState: state })
+          listeners.add(listener)
+          const url = authorizeUrl({ challenge, state, redirectUri: listener.redirectUri })
+          openBrowser(url)
+          const callback = (async () => {
+            try {
+              const outcome = await listener.result
+              if (outcome.error) throw new Error(`Puku sign-in failed: ${outcome.error}`)
+              if (!outcome.code) throw new Error("Puku did not return an authorization code")
+              if (outcome.state !== state) throw new Error("Puku sign-in failed: state mismatch")
+              const tokens = await exchangeCode({
+                code: outcome.code,
+                redirectUri: listener.redirectUri,
+                verifier,
+                state,
+              })
+              return {
+                type: "oauth",
+                methodID: PUKU.oauthMethodID,
+                access: tokens.access,
+                refresh: tokens.refresh,
+                expires: tokens.expires,
+              }
+            } finally {
+              listeners.delete(listener)
+              await listener.close()
+            }
+          })()
+          return {
+            url,
+            instructions: "Complete the sign-in in your browser. This window closes automatically.",
+            mode: "auto",
+            callback,
           }
-          await report(
-            ctx,
-            sessionID,
-            "Puku AI is connected. Pick a Puku model with /models, for example puku/puku-ai-2.8.",
-          )
-        },
-      })
-
-      editor.add({
-        name: "puku-signout",
-        description: "Remove the Puku API key from OpenCode",
-        execute: async ({ sessionID }) => {
-          await ctx.storage.remove(KEY)
-          apiKey = undefined
-          await ctx.provider.reload()
-          await report(ctx, sessionID, "The Puku API key was removed.")
         },
       })
     })
+
+    return async () => {
+      controller.abort()
+      for (const listener of listeners) await listener.close()
+      listeners.clear()
+    }
   },
 }
 
 export default PukuPlugin
-
-/** The provider definition OpenCode shows in its provider list. */
-function providerInfo(apiKey) {
-  return {
-    id: PUKU.providerID,
-    name: "Puku AI",
-    activation: "enabled",
-    package: PUKU.package,
-    // The runtime appends `/messages` to the base URL and sends the key as
-    // `x-api-key`, which is what Puku's inference API expects.
-    settings: {
-      baseURL: PUKU.apiBase,
-      ...(apiKey ? { apiKey } : {}),
-    },
-  }
-}
-
-/** The stored key, or the environment override that replaces it at startup. */
-async function readKey(ctx) {
-  const fromEnv = process.env.PUKU_AI_API_KEY ?? process.env.PUKU_API_KEY
-  if (fromEnv?.trim()) return fromEnv.trim()
-  const stored = await ctx.storage.get(KEY)
-  return typeof stored === "string" && stored ? stored : undefined
-}
-
-/** Runs the Puku OAuth flow and returns the minted API key. */
-async function signIn(onUrl) {
-  const { verifier, challenge } = pkce()
-  const state = randomBytes(32).toString("base64url")
-  const listener = await listenForCallback({ expectedState: state })
-  const redirectUri = listener.redirectUri
-  const url = authorizeUrl({ challenge, state, redirectUri })
-  openBrowser(url)
-  await onUrl?.(url)
-  try {
-    const result = await listener.result
-    if (result.error) throw new Error(result.error)
-    if (result.state !== state) throw new Error("Puku returned an unexpected OAuth state")
-    if (!result.code) throw new Error("Puku did not return an authorization code")
-    const tokens = await exchangeCode({ code: result.code, redirectUri, verifier, state })
-    return await createApiKey(tokens.access)
-  } finally {
-    await listener.close()
-  }
-}
-
-/** Tells the user what happened without spending a model turn. */
-async function report(ctx, sessionID, text) {
-  try {
-    await ctx.session.synthetic({ sessionID, text })
-  } catch (error) {
-    // The status is a courtesy, but a swallowed failure hides why a sign-in
-    // did not finish, so it also goes to the server log.
-    console.error(`[opencode-puku] ${text} (report failed: ${describe(error)})`)
-  }
-}
-
-const describe = (error) => (error instanceof Error ? error.message : String(error))
