@@ -64,6 +64,30 @@ test("the scopes can mint an API key and allow inference", () => {
   assert.ok(PUKU.scopes.includes("user:inference"))
 })
 
+test("the callback redirect URI is one Puku registered", async (t) => {
+  // Puku only exchanges a code for a redirect URI it registered for this
+  // client, so the listener has to land on one of them.
+  let registered
+  try {
+    registered = await fetch("https://puku.sh/oauth/puku-cli-client-metadata").then((response) =>
+      response.json(),
+    )
+  } catch {
+    // The suite runs without network access; the allowlist is checked by the
+    // local port test below.
+    t.skip("Puku's client metadata is unreachable")
+    return
+  }
+  const listener = await listenForCallback()
+  try {
+    assert.ok(
+      registered.redirect_uris.includes(listener.redirectUri),
+      `${listener.redirectUri} is not in Puku's registered redirect URIs`,
+    )
+  } finally {
+    await listener.close()
+  }
+})
 test("listenForCallback binds a port of Puku's redirect allowlist", async () => {
   const listener = await listenForCallback()
   try {
