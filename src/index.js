@@ -111,6 +111,7 @@ async function publishModels(ctx) {
       provider.package = PUKU.package
       provider.integrationID = PUKU.integrationID
       provider.settings = { baseURL: PUKU.apiBase }
+      provider.headers = { ...provider.headers, "anthropic-beta": PUKU.anthropicBeta }
     })
     editor.models.set(PUKU.providerID, models)
   })
@@ -125,5 +126,6 @@ function providerInfo() {
     package: PUKU.package,
     integrationID: PUKU.integrationID,
     settings: { baseURL: PUKU.apiBase },
+    headers: { "anthropic-beta": PUKU.anthropicBeta },
   }
 }
