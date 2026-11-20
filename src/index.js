@@ -15,7 +15,7 @@ import { randomBytes } from "node:crypto"
 
 import { PUKU } from "./constants.js"
 import { listModels } from "./api.js"
-import { authorizeUrl, exchangeCode, listenForCallback, openBrowser, pkce } from "./oauth.js"
+import { authorizeUrl, exchangeCode, listenForCallback, openBrowser, pkce, refreshAccessToken } from "./oauth.js"
 
 export const PukuPlugin = {
   id: "puku",
@@ -33,6 +33,16 @@ export const PukuPlugin = {
           id: PUKU.oauthMethodID,
           type: "oauth",
           label: "Sign in with Puku",
+        },
+        async refresh(credential) {
+          const tokens = await refreshAccessToken({ refresh: credential.refresh })
+          return {
+            type: "oauth",
+            methodID: PUKU.oauthMethodID,
+            access: tokens.access,
+            refresh: tokens.refresh,
+            expires: tokens.expires,
+          }
         },
         async authorize() {
           const { verifier, challenge } = pkce()
