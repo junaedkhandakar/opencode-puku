@@ -1,21 +1,20 @@
-// Puku AI provider for OpenCode.
+// OpenCode plugin that exposes the Puku models.
 //
-// Registers `puku` as an integration and as a provider (Anthropic-compatible
-// Messages API), then adds the Puku models to the model list.
-//
-// Two sign-in paths are offered by OpenCode itself:
+// Puku has no entry in the models.dev catalog, so the plugin registers the
+// provider itself and binds it to a native OpenCode integration:
 //
 // - `opencode auth login puku` runs the Puku OAuth + PKCE flow in the browser.
 //   The stored credential is an OAuth token, which the runtime sends to Puku as
 //   `Authorization: Bearer <token>`; the plugin refreshes it when it expires.
-// - `opencode auth login puku` with the API-key method stores a Puku API key,
-//   which the runtime sends as `x-api-key`.
+// - The API-key method stores a Puku API key, which the runtime sends as
+//   `x-api-key`.
 //
 // The models are used as `puku/<model-id>`, for example `puku/puku-ai-2.8`.
 
 import { randomBytes } from "node:crypto"
 
 import { PUKU } from "./constants.js"
+import { listModels } from "./api.js"
 import { authorizeUrl, exchangeCode, listenForCallback, openBrowser, pkce } from "./oauth.js"
 
 export const PukuPlugin = {
@@ -83,6 +82,10 @@ export const PukuPlugin = {
       })
     })
 
+    // The provider references the integration, so it is published once the
+    // integration exists.
+    await publishModels(ctx)
+
     return async () => {
       controller.abort()
       for (const listener of listeners) await listener.close()
@@ -92,3 +95,35 @@ export const PukuPlugin = {
 }
 
 export default PukuPlugin
+
+/** Publishes the provider and the models Puku currently serves. */
+async function publishModels(ctx) {
+  const models = await listModels()
+  await ctx.provider.transform((editor) => {
+    const existing = editor.get(PUKU.providerID)
+    if (!existing) {
+      editor.add({ info: providerInfo(), models })
+      return
+    }
+    editor.update(PUKU.providerID, (provider) => {
+      provider.name = "Puku AI"
+      provider.activation = "enabled"
+      provider.package = PUKU.package
+      provider.integrationID = PUKU.integrationID
+      provider.settings = { baseURL: PUKU.apiBase }
+    })
+    editor.models.set(PUKU.providerID, models)
+  })
+}
+
+/** The provider definition OpenCode shows in its provider list. */
+function providerInfo() {
+  return {
+    id: PUKU.providerID,
+    name: "Puku AI",
+    activation: "enabled",
+    package: PUKU.package,
+    integrationID: PUKU.integrationID,
+    settings: { baseURL: PUKU.apiBase },
+  }
+}
