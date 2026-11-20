@@ -74,6 +74,13 @@ export const PukuPlugin = {
           }
         },
       })
+
+      // A Puku API key works against the inference API as well. The runtime
+      // sends it as `x-api-key`, the same header Puku's own CLI uses.
+      editor.method.update({
+        integrationID: PUKU.integrationID,
+        method: { type: "key", label: "Puku API key" },
+      })
     })
 
     return async () => {
